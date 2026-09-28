@@ -1,0 +1,35 @@
+[package]
+name = "kiro-mcp-scope"
+version = "0.1.0"
+edition = "2021"
+description = "Scope Kiro MCP servers to the projects that need them"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/shaffe-fr/kiro-mcp-scope"
+keywords = ["mcp", "kiro", "tui", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "kms"
+path = "src/main.rs"
+
+[lib]
+name = "kms"
+path = "src/lib.rs"
+
+[dependencies]
+# crossterm is reached through ratatui's re-export (ratatui::crossterm) so event
+# types always match the backend's own version.
+ratatui = "0.30.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+# Drop symbols, keep everything else at default release settings. Room left
+# (no LTO, opt-level, panic=abort) should binary size ever become critical.
+strip = true

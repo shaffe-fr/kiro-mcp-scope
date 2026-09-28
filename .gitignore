@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+
+# Backup written by `kms --migrate`: holds secrets in cleartext
+*.bak
+
+# Kiro's per-project settings: local activation, may reference personal variables
+.kiro/settings/
+
+# Environment files
+.env
+.env.local
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
