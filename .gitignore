@@ -1,0 +1,5 @@
+# build artifacts
+spike-go/spike-go.exe
+spike-go/diag/diag.exe
+spike-rust/target/
+*.log
