@@ -1,5 +1,8 @@
 # kiro-mcp-scope
 
+[![CI](https://github.com/shaffe-fr/kiro-mcp-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/shaffe-fr/kiro-mcp-scope/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `kms` scopes your MCP servers to the projects that need them in
 [Kiro](https://kiro.dev). You define each server once, in a local catalog, and
 pick per project which ones it gets — from a TUI or the command line.
@@ -168,7 +171,13 @@ For Kiro to resolve a variable:
 
 ## Installation
 
-kms is a single Rust binary with no runtime. Install it with Cargo:
+kms is a single binary with no runtime.
+
+Prebuilt binaries for Windows, Linux and macOS are attached to each
+[release](https://github.com/shaffe-fr/kiro-mcp-scope/releases), with a
+`SHA256SUMS` file. Extract `kms` (or `kms.exe`) to a directory on your `PATH`.
+
+Or build and install it with Cargo:
 
 ```bash
 cargo install --git https://github.com/shaffe-fr/kiro-mcp-scope
