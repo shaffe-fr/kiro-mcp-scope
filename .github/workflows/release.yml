@@ -47,7 +47,10 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: kms-*.*
+          # Archives only: the staging directory shares the kms-v… prefix.
+          path: |
+            kms-*.zip
+            kms-*.tar.gz
           if-no-files-found: error
 
   release:
@@ -65,6 +68,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum kms-* > SHA256SUMS
+          sha256sum kms-*.zip kms-*.tar.gz > SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" --generate-notes ./*
+            --title "$GITHUB_REF_NAME" --generate-notes \
+            kms-*.zip kms-*.tar.gz SHA256SUMS
