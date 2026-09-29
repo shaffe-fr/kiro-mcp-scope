@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-28
+
 ### Added
 
 - Project view and projects × servers matrix view, with keyboard and mouse.
@@ -19,4 +21,5 @@ All notable changes to this project are documented here. The format follows
   `KMS__<SERVER>__<KEY>` environment variables, with `--dry-run` and
   `--no-env`; `--rollback` back to the global model.
 
-[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/commits/main
+[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.1.0
