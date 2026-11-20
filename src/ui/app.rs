@@ -431,14 +431,11 @@ fn render_matrix(frame: &mut Frame, view: &MatrixView) {
                 row_style
             };
             spans.push(Span::styled(mark, cell_style));
-            let gap = if on_cursor_column && !on_cursor_row {
-                column_style()
-            } else {
-                row_style
-            };
+            // The gap between cells never takes the band: it is as wide as the
+            // `[ ]` and the header number above it, no wider.
             spans.push(Span::styled(
                 " ".repeat(CELL_STEP as usize - mark.len()),
-                gap,
+                row_style,
             ));
         }
         if is_worktree && !project.has_config {
@@ -570,6 +567,14 @@ mod tests {
         assert_eq!(at(&buffer, 2, header), active, "its column number");
         assert_eq!(at(&buffer, 2, row1), band, "the column band on other rows");
         assert_ne!(at(&buffer, 0, row2), active, "no other cell is active");
+        let gap = buffer[(NAME_COL_WIDTH + 2 * CELL_STEP + 3, row1)]
+            .style()
+            .bg;
+        assert_ne!(gap, band, "the band stops at the cell's three characters");
+        let last = buffer[(NAME_COL_WIDTH + 2 * CELL_STEP + 2, row1)]
+            .style()
+            .bg;
+        assert_eq!(last, band, "and covers all three");
         assert_ne!(at(&buffer, 1, header), active);
 
         view.move_server(-1);
