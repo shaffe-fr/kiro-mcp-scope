@@ -94,8 +94,9 @@ pub fn status(
     Ok(out.trim_end().to_string())
 }
 
-/// `--discover`: list detected Kiro projects and how many catalog servers each
-/// has taken. Roots come from CLI overrides, else the config, else cwd + parent.
+/// `--discover`: list detected Kiro projects, each followed by its git worktrees,
+/// and how many catalog servers each has taken. Roots come from CLI overrides,
+/// else the config, else cwd + parent.
 pub fn discover(
     catalog_path: &Path,
     config_path: &Path,
@@ -117,8 +118,14 @@ pub fn discover(
     }
     let total = catalog.servers.len();
     for project in &projects {
+        let indent = if project.is_worktree() { "  " } else { "" };
+        let tag = match (project.is_worktree(), project.has_config) {
+            (true, false) => "  [worktree, no config]",
+            (true, true) => "  [worktree]",
+            _ => "",
+        };
         out.push_str(&format!(
-            "{}  ({}/{} servers)  {}\n",
+            "{indent}{}  ({}/{} servers)  {}{tag}\n",
             project.name,
             project.active_count,
             total,

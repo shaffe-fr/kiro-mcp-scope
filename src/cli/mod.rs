@@ -4,5 +4,6 @@
 pub mod args;
 pub mod commands;
 pub mod migration;
+pub mod syncing;
 
-pub use args::{parse_args, Command, ParseError};
+pub use args::{parse_args, Command, ParseError, Scope};

@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use kms::cli::commands;
 use kms::cli::migration::{self, MigrateOptions};
+use kms::cli::syncing::{self, Outcome, SyncEnv};
 use kms::cli::{parse_args, Command};
 use kms::core::catalog::{default_catalog_path, load_catalog, CatalogError};
 use kms::core::config::{default_config_path, load_config, resolve_roots};
@@ -13,7 +14,7 @@ use kms::core::global::default_global_path;
 use kms::core::matrix::Matrix;
 use kms::core::types::Catalog;
 use kms::ui::app::App;
-use kms::ui::matrix_view::MatrixView;
+use kms::ui::matrix_view::{InitPaths, MatrixView};
 use kms::ui::project_view::ProjectView;
 
 const HELP: &str = "\
@@ -23,15 +24,44 @@ Usage:
   kms                     launch the project view (TUI)
   kms --matrix            launch the matrix view (projects x servers)
   kms --list              list catalog servers and their state here
-  kms --status            like --list, plus a global-drift warning
-  kms --discover          list detected Kiro projects
+  kms --status            like --list, plus global drift and the other copies
+  kms --discover          list detected Kiro projects, worktrees under them
   kms --activate <name>   take a catalog server into this project
   kms --deactivate <name> remove a server from this project
   kms --migrate           move global servers into the catalog and their
                           secrets into KMS__* environment variables
   kms --migrate --no-env  same, without touching the environment
   kms --rollback          return to the global mcp.json from the backup
-  --dry-run               with --migrate or --rollback: show, change nothing
+  --dry-run               with --migrate, --rollback, --sync, --init-worktree
+                          or --undo: show, change nothing
+
+Keeping copies in line with the catalog:
+  kms --sync              apply the catalog's definition to every copy of a
+                          server it already holds: .kiro/settings/mcp.json and
+                          .ai/mcp/mcp.json of projects, worktrees and Herd
+                          clones. `disabled` is kept; a local autoApprove or
+                          disabledTools the catalog never had is kept and
+                          reported. Backups go to ~/.kiro/kms-backups.
+  kms --sync --dry-run    list the files and show the diff, write nothing
+  kms --check             same comparison, no write: exit 0 aligned, 1 diverged,
+                          2 a file could not be read (--strict: warnings fail)
+  --strict                with --check: warnings (mcp-remote env nobody uses,
+                          literal secret) make it fail too
+  --server <name>         limit --sync / --check to a server (repeatable)
+  --include <list>        also cover agents and/or examples: Kiro agent specs
+                          (~/.kiro/agents, ~/.kiro/mates/agents) and
+                          mcp.json.example files. Without it they are reported
+                          but left alone; in agents, env and headers are kept
+  --no-worktrees          leave git worktrees out of --sync / --check
+  --force                 with --sync: replace local customizations (and the
+                          env of agents); with --init-worktree: replace the
+                          file; with --undo: overwrite files edited since
+  kms --init-worktree [<path>]
+                          write a worktree's .kiro/settings/mcp.json from its
+                          parent project (current directory by default)
+  kms --undo [<id>]       restore the files of a --sync (the last one by
+                          default); the undo is itself backed up
+  kms --undo --list       list the kept runs (the last 20)
   kms --help              show this help
   kms --version           show the version";
 
@@ -47,16 +77,60 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(command) {
-        Ok(Some(output)) => {
-            println!("{output}");
-            ExitCode::SUCCESS
+    // `--check` reserves 1 for "a copy diverges", so its own failures use 2.
+    let failure = if matches!(command, Command::Check { .. }) {
+        2
+    } else {
+        1
+    };
+
+    let result = match command {
+        Command::Sync { .. }
+        | Command::Check { .. }
+        | Command::InitWorktree { .. }
+        | Command::Undo { .. } => run_sync_family(command),
+        other => run(other).map(|output| Outcome {
+            output: output.unwrap_or_default(),
+            code: 0,
+        }),
+    };
+
+    match result {
+        Ok(Outcome { output, code }) => {
+            if !output.is_empty() {
+                println!("{output}");
+            }
+            ExitCode::from(code)
         }
-        Ok(None) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("{message}");
-            ExitCode::FAILURE
+            ExitCode::from(failure)
         }
+    }
+}
+
+/// `--sync`, `--check`, `--init-worktree` and `--undo`.
+fn run_sync_family(command: Command) -> Result<Outcome, String> {
+    let env = SyncEnv::detect(&project_dir()?)?;
+    match command {
+        Command::Sync {
+            scope,
+            dry_run,
+            force,
+        } => syncing::sync(&env, &scope, dry_run, force),
+        Command::Check { scope, strict } => syncing::check(&env, &scope, strict),
+        Command::InitWorktree {
+            path,
+            dry_run,
+            force,
+        } => syncing::init_worktree(&env, path.as_deref(), dry_run, force),
+        Command::Undo {
+            id,
+            list,
+            dry_run,
+            force,
+        } => syncing::undo(&env, id.as_deref(), list, dry_run, force),
+        _ => Err("Not a synchronization command.".to_string()),
     }
 }
 
@@ -83,12 +157,27 @@ fn run(command: Command) -> Result<Option<String>, String> {
         Command::List => commands::list(&catalog_path()?, &project_dir()?)
             .map(Some)
             .map_err(|e| e.to_string()),
-        Command::Status => commands::status(&catalog_path()?, &project_dir()?, &global_path()?)
-            .map(Some)
-            .map_err(|e| e.to_string()),
-        Command::Activate { name } => commands::activate(&catalog_path()?, &project_dir()?, &name)
-            .map(Some)
-            .map_err(|e| e.to_string()),
+        Command::Status => {
+            let cwd = project_dir()?;
+            let mut out = commands::status(&catalog_path()?, &cwd, &global_path()?)
+                .map_err(|e| e.to_string())?;
+            if let Ok(section) = SyncEnv::detect(&cwd).and_then(|env| syncing::status_section(&env))
+            {
+                if !section.is_empty() {
+                    out.push_str("\n\n");
+                    out.push_str(&section);
+                }
+            }
+            Ok(Some(out))
+        }
+        Command::Activate { name } => {
+            let message = commands::activate(&catalog_path()?, &project_dir()?, &name)
+                .map_err(|e| e.to_string())?;
+            if let Ok(catalog) = load_catalog(&catalog_path()?) {
+                kms::core::state::record_best_effort(&catalog);
+            }
+            Ok(Some(message))
+        }
         Command::Deactivate { name } => {
             commands::deactivate(&catalog_path()?, &project_dir()?, &name)
                 .map(Some)
@@ -125,6 +214,10 @@ fn run(command: Command) -> Result<Option<String>, String> {
             .map(Some)
             .map_err(|e| e.to_string())
         }
+        Command::Sync { .. }
+        | Command::Check { .. }
+        | Command::InitWorktree { .. }
+        | Command::Undo { .. } => Err("Not a plain command.".to_string()),
         Command::Tui => {
             let app = build_app()?;
             kms::ui::app::run(app).map_err(|e| e.to_string())?;
@@ -219,5 +312,13 @@ fn build_matrix(catalog: &Catalog, cwd: &Path) -> Option<MatrixView> {
         return None;
     }
     let matrix = Matrix::build(catalog, &projects);
-    Some(MatrixView::new(catalog.clone(), matrix))
+    let mut view = MatrixView::new(catalog.clone(), matrix);
+    if let Ok(env) = SyncEnv::detect(cwd) {
+        view.outside = syncing::matrix_summary(&env, catalog);
+        view = view.with_init_paths(InitPaths {
+            state: env.state_path.clone(),
+            backups: env.backup_root.clone(),
+        });
+    }
+    Some(view)
 }
