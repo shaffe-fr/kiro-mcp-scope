@@ -36,10 +36,13 @@ fn clean(path: &Path) -> PathBuf {
     out
 }
 
-/// A key that is equal for two spellings of the same location: separators
+/// A key that is equal for two spellings of the same location: symlinks and
+/// 8.3 short names resolved when the path exists (git records real paths, while
+/// a temp dir or a symlinked folder may be spelled otherwise), separators
 /// unified, no `\\?\` prefix, no trailing slash, case-folded on Windows.
 pub fn path_key(path: &Path) -> String {
-    let text = clean(path).to_string_lossy().replace('\\', "/");
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = clean(&resolved).to_string_lossy().replace('\\', "/");
     let text = text.strip_prefix("//?/").unwrap_or(&text);
     let text = text.trim_end_matches('/');
     if cfg!(windows) {
