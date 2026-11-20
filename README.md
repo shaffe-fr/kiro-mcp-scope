@@ -169,6 +169,131 @@ For Kiro to resolve a variable:
    Kiro's documentation calls this setting "Mcp Approved Env Vars"; depending on
    the version it may not show under that name in the settings.
 
+## Keeping every copy in line with the catalog
+
+Changing a server in the catalog does not change the copies already made. They
+live in more places than the projects kms discovers, so kms looks for them all:
+
+| Category | Files | `--sync` writes them |
+|---|---|---|
+| settings | `<dir>/.kiro/settings/mcp.json` | yes |
+| boost | `<dir>/.ai/mcp/mcp.json` (Laravel Boost) | yes |
+| example | `<dir>/.kiro/settings/mcp.json.example` | with `--include examples` |
+| agent | `~/.kiro/agents/*.json`, `~/.kiro/mates/agents/*.json` | with `--include agents` |
+
+`<dir>` is a project, one of its **git worktrees**, or a **Herd clone**
+(`~/.config/herd/devtools/clones/<id>/<name>`). Worktrees are found from git's
+own records, wherever they live (`.worktrees/<name>` or a sibling directory),
+and a worktree discovered on its own is attached to its project. A worktree is a
+row of its own in the matrix, folded under its project.
+
+Copies outside the default scope are still compared and reported, so nothing
+goes unnoticed; they are only left alone.
+
+```bash
+kms --sync --dry-run                 # which files, and a masked diff; writes nothing
+kms --sync                           # apply, with backups
+kms --sync --server Rovo-MCP-Jira3   # one server (repeat --server for several)
+kms --sync --include agents,examples # also agents and *.example
+kms --sync --no-worktrees            # leave worktrees out
+kms --check                          # no write; exit 0 aligned, 1 diverged, 2 unreadable
+kms --check --strict                 # warnings fail the check too
+```
+
+`--check` fits a script or an agent: it exits `0` when every copy in scope
+matches, `1` when one diverges, `2` when a file could not be read.
+
+### What a sync changes
+
+It only **updates servers already present** in a file; it never adds nor
+removes one (activation stays what the TUI and `--activate` do). On such a
+server the catalog wins on every field, except:
+
+- `disabled` is the project's and is always kept;
+- `autoApprove` and `disabledTools` follow a **three-version rule**, described
+  below;
+- in an **agent**, `env` and `headers` are kept (it is not known that agents
+  resolve `${KMS__…}` references) and the difference is reported, values hidden.
+  `--force` replaces them. An agent's `command` resolved to an absolute path
+  (`…\npx.CMD` for `npx`) is the same program, not a difference.
+
+The key order and layout of each file are kept: kms replaces only the entry that
+changes and leaves every other byte alone — indentation, line endings, BOM,
+neighbouring servers. A file whose final content would be identical is never
+rewritten, backed up or listed: Kiro reconnects its MCP servers whenever such a
+file changes.
+
+### Local customizations: the three-version rule
+
+kms keeps, in `~/.kiro/mcp-catalog.state.json`, the successive values the catalog
+had for `autoApprove` and `disabledTools` (sorted and deduplicated, so reordering
+is never a change). For a copy:
+
+- same as the catalog: left untouched;
+- equal to a value the catalog once had: refreshed to the current one, so a
+  correction made in the catalog (renamed tools, say) reaches every copy;
+- equal to nothing the catalog ever had: a **local customization**. It is kept
+  and reported. When it is a `disabledTools`, kms says which tools the catalog
+  disables that this copy leaves active. `--force` replaces it.
+
+The first time, with no history, the catalog wins and every replaced local value
+is reported before it happens (`--sync --dry-run`, `--check`). Only commands that
+write (`--sync`, `--activate`, the TUI) record into the state file; read-only
+commands never do. Two hand edits of the catalog with no kms run between them
+leave the intermediate version unknown: a copy still carrying it is then treated
+as customized, kept and reported, never overwritten silently.
+
+### Backups and `--undo`
+
+Before any write, kms copies the file to `~/.kiro/kms-backups/<run>/` with a
+manifest, so projects and worktrees get no stray `.bak` files. The last 20 runs
+are kept, because backups of agents may hold secrets in clear.
+
+```bash
+kms --undo --list          # kept runs
+kms --undo                 # undo the last run
+kms --undo 20261120-104400 # a given run
+kms --undo --dry-run       # show what would be restored
+```
+
+`--undo` skips a file edited since the run (`--force` overwrites it) and a file
+whose folder is gone, saves what it overwrites as a run of its own (so it can be
+undone), and leaves the state file alone. `--rollback` is unrelated: it returns
+from the catalog to the global `mcp.json`.
+
+### Worktrees without a config
+
+Many worktrees have no `.kiro/settings/mcp.json`. They show as "no config", and
+nothing creates one on its own. To give one the servers of its project:
+
+```bash
+kms --init-worktree [<path>]   # current directory by default; --dry-run, --force
+```
+
+The set of servers is the parent's, `disabled` included. For servers of the
+catalog the values come from the catalog (with the local customizations the rule
+above recognizes); servers the catalog does not know, such as `laravel-boost`, are
+copied as they are and listed. It refuses to replace an existing file unless
+`--force`. In the matrix view, `i` does the same on the selected worktree.
+
+### Warnings
+
+`--check`, `--sync` and `--status` point out suspicious configuration, never
+quoting a value:
+
+- an `mcp-remote` server whose `env` variable no argument references:
+  `mcp-remote` ignores it, so it does nothing (reference it as `${VAR}` in an
+  argument such as `--header Authorization:${VAR}`, or remove it);
+- a literal secret in an `env` or `headers`, in an agent or any other copy.
+
+For an agent, `--check` also says whether the server is defined in
+`~/.kiro/settings/mcp.json` or `~/.kiro/crew/mcp.json`: KiroCrew can re-render
+the agent from there, so the fix belongs at that source. A server that exists
+only in the agent spec is fixed by rewriting it.
+
+All output is masked: the values of `env` and `headers`, secrets in URLs and
+arguments never appear in a diff, a message or a log.
+
 ## Installation
 
 kms is a single binary with no runtime.
@@ -193,6 +318,8 @@ Files kms reads:
 |---|---|
 | `~/.kiro/mcp-catalog.json` | the catalog, source of definitions |
 | `~/.kiro/mcp-catalog.config.json` | kms's own config: roots to scan, depth |
+| `~/.kiro/mcp-catalog.state.json` | the successive catalog values of `autoApprove` / `disabledTools`, written by `--sync`, `--activate` and the TUI |
+| `~/.kiro/kms-backups/<run>/` | copies of the files a `--sync`, `--init-worktree` or `--undo` replaced, with a manifest; the last 20 runs |
 | `~/.kiro/settings/mcp.json` | the global `mcp.json`, read only (except by `--migrate` and `--rollback`) |
 | `~/.kiro/settings/mcp.json.bak` | the original kept by `--migrate`, secrets included |
 | `~/.kiro/kms-env.sh` | outside Windows: the `KMS__*` variables, sourced from the shell profile |
@@ -207,14 +334,24 @@ Without arguments kms opens the project view (TUI). Options cover the rest:
 | `kms` | open the project view (TUI) |
 | `kms --matrix` | open the matrix view (projects × servers) |
 | `kms --list` | list catalog servers and their state in this project |
-| `kms --status` | like `--list`, plus the global drift warning |
-| `kms --discover` | list detected Kiro projects and how many servers each takes |
+| `kms --status` | like `--list`, plus the global drift warning and the other copies that differ |
+| `kms --discover` | list detected Kiro projects, their worktrees under them, and how many servers each takes |
 | `kms --activate <name>` | take a catalog server into this project |
 | `kms --deactivate <name>` | remove a server from this project |
 | `kms --migrate` | move the global servers into the catalog, and their secrets into `KMS__*` variables |
 | `kms --migrate --no-env` | the same, without touching environment variables |
 | `kms --rollback` | return to the global `mcp.json` from the backup |
-| `--dry-run` | with `--migrate` or `--rollback`: show what would happen, change nothing |
+| `kms --sync` | apply the catalog's definition to every copy of a server (see [below](#keeping-every-copy-in-line-with-the-catalog)) |
+| `kms --check` | the same comparison without writing; exit `0` aligned, `1` diverged, `2` unreadable |
+| `--server <name>` | with `--sync` / `--check`: only this server (repeatable) |
+| `--include agents,examples` | with `--sync` / `--check`: also cover Kiro agent specs and `mcp.json.example` files |
+| `--no-worktrees` | with `--sync` / `--check`: leave git worktrees out |
+| `--strict` | with `--check`: warnings fail the check |
+| `--force` | with `--sync`: replace local customizations and agents' `env`; with `--init-worktree`: replace the file; with `--undo`: overwrite files edited since |
+| `kms --init-worktree [<path>]` | write a worktree's `.kiro/settings/mcp.json` from its project |
+| `kms --undo [<id>]` | restore the files of a run (the last by default) |
+| `kms --undo --list` | list the kept runs |
+| `--dry-run` | with `--migrate`, `--rollback`, `--sync`, `--init-worktree` or `--undo`: show what would happen, change nothing |
 | `kms --help` | show help |
 | `kms --version` | show the version |
 
@@ -260,12 +397,26 @@ A projects × servers grid to see at a glance where a server is missing.
 | `↑` `↓` or `k` `j` | change project |
 | `←` `→` or `h` `l` | change server |
 | `Space` / `Enter` / click | check / uncheck the cell |
+| `e` | fold / unfold the worktrees of a project |
+| `i` | on a worktree with no config, write it from its project |
 | `s` | save — writes only modified projects |
 | wheel | change project |
 | `Tab` | back to the project view |
 | `q` or `Ctrl+C` | quit |
 
-A `[!]` cell marks a local divergence in that project.
+A `[!]` cell marks a local divergence in that project. The cell under the
+keyboard cursor is lit, with its column number in the header and a faint band
+down its column. Columns are numbered; a
+legend under the grid gives each number's server name, the cursor column
+highlighted. A line under the legend explains the keys that apply to the row
+under the cursor (`e` for the worktrees of a project, `i` for a worktree with no
+config), and `+` / `-` before a project name mean its worktrees are hidden /
+shown.
+
+Worktrees sit under their project, folded by default. A project unfolds by
+itself as soon as one of its worktrees diverges or has no config, so nothing
+that needs a look stays hidden. A line under the grid counts the copies outside
+it (boost, agents, examples) that differ; `kms --check` lists them.
 
 ## Discovery configuration
 

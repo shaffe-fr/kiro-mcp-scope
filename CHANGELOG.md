@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `--sync` applies the catalog's definition to every copy of a server, with
+  `--dry-run` (files and a masked diff), `--server`, `--include agents,examples`,
+  `--no-worktrees` and `--force`. It covers `.kiro/settings/mcp.json` and
+  `.ai/mcp/mcp.json` of projects, worktrees and Herd clones; Kiro agent specs and
+  `mcp.json.example` files are compared and, with `--include`, synchronized.
+- `--check`: the same comparison without writing, exit code 0 aligned, 1
+  diverged, 2 unreadable; `--strict` makes warnings fail.
+- Edits replace only the entry that changes, keeping indentation, key order, line
+  endings and BOM; a file whose content would not change is never rewritten.
+- A three-version rule for `autoApprove` / `disabledTools`: a copy carrying an
+  older catalog value is refreshed, a local customization is kept and reported,
+  with the tools the catalog disables that the copy leaves active. History in
+  `~/.kiro/mcp-catalog.state.json`.
+- Git worktrees are discovered from git's records, wherever they live, and
+  attached to their project; folded under it in the matrix view and unfolded when
+  they diverge or have no config.
+- `--init-worktree` (and `i` in the matrix view) writes a worktree's config from
+  its project.
+- Backups of every write in `~/.kiro/kms-backups` (last 20 runs) and `--undo`,
+  with `--undo --list`.
+- Warnings: an `mcp-remote` `env` variable no argument references, a literal
+  secret in a copy. `--status` and the matrix view report the copies outside the
+  projects.
+
+### Changed
+- `--discover` lists worktrees under their project instead of as projects of
+  their own.
+- `--dry-run` and `--force` apply to the new commands as well.
 
 ## [0.1.0] - 2026-09-28
 
