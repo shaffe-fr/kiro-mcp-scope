@@ -170,6 +170,12 @@ fn residue_is_secret_like(residue: &str) -> bool {
     shannon_entropy(trimmed) >= HIGH_ENTROPY_MIN_BITS
 }
 
+/// Whether a key name evokes a secret (rule 2's vocabulary), for callers that
+/// need to decide what to hide without analyzing a value.
+pub fn is_sensitive_key(key: &str) -> bool {
+    key_is_sensitive(key)
+}
+
 /// Whether a key/value pair reads as a literal secret under the three rules.
 /// Migration uses this to decide which values to extract into `${VAR}`.
 pub fn is_secret(key: &str, value: &str) -> bool {
