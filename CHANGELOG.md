@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-20
+
+### Fixed
+- A worktree is now recognized even when its path is spelled differently from
+  the one git records (symlinked folders such as macOS `/var` and `/tmp`,
+  Windows 8.3 short names): paths are compared once symlinks and short names are
+  resolved.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
@@ -53,6 +61,7 @@ All notable changes to this project are documented here. The format follows
   `KMS__<SERVER>__<KEY>` environment variables, with `--dry-run` and
   `--no-env`; `--rollback` back to the global model.
 
-[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.2.1
 [0.2.0]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.2.0
 [0.1.0]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.1.0
