@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-11-20
+
 ### Added
 - `--sync` applies the catalog's definition to every copy of a server, with
   `--dry-run` (files and a masked diff), `--server`, `--include agents,examples`,
@@ -50,5 +53,6 @@ All notable changes to this project are documented here. The format follows
   `KMS__<SERVER>__<KEY>` environment variables, with `--dry-run` and
   `--no-env`; `--rollback` back to the global model.
 
-[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shaffe-fr/kiro-mcp-scope/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.2.0
 [0.1.0]: https://github.com/shaffe-fr/kiro-mcp-scope/releases/tag/v0.1.0

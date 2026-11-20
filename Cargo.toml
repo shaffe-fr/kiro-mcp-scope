@@ -1,6 +1,6 @@
 [package]
 name = "kiro-mcp-scope"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Scope Kiro MCP servers to the projects that need them"
 license = "MIT"
