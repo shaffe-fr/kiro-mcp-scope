@@ -20,7 +20,7 @@ use ratatui::{
         execute,
     },
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::Paragraph,
     DefaultTerminal, Frame,
 };
@@ -128,11 +128,10 @@ fn handle_project(view: &mut ProjectView, event: &Event) {
             KeyCode::Down | KeyCode::Char('j') => view.move_cursor(1),
             KeyCode::Char(' ') | KeyCode::Enter => view.toggle(),
             KeyCode::Char('d') => view.cycle_divergence(),
-            KeyCode::Char('s') => {
-                if let Err(err) = view.save() {
-                    view.message = Some(write_error_message(err));
-                }
-            }
+            KeyCode::Char('s') => match view.save() {
+                Ok(_) => record_history(view.catalog()),
+                Err(err) => view.message = Some(write_error_message(err)),
+            },
             _ => {}
         },
         Event::Mouse(mouse) => match mouse.kind {
@@ -161,15 +160,18 @@ fn handle_matrix(view: &mut MatrixView, event: &Event) {
             KeyCode::Left | KeyCode::Char('h') => view.move_server(-1),
             KeyCode::Right | KeyCode::Char('l') => view.move_server(1),
             KeyCode::Char(' ') | KeyCode::Enter => view.toggle_cursor(),
-            KeyCode::Char('s') => {
-                if let Err((project, err)) = view.save() {
+            KeyCode::Char('e') => view.toggle_fold(),
+            KeyCode::Char('i') => view.init_worktree(),
+            KeyCode::Char('s') => match view.save() {
+                Ok(_) => record_history(view.catalog()),
+                Err((project, err)) => {
                     view.message = Some(format!(
                         "{}: {}",
                         project.display(),
                         write_error_message(err)
                     ));
                 }
-            }
+            },
             _ => {}
         },
         Event::Mouse(mouse) => match mouse.kind {
@@ -180,6 +182,13 @@ fn handle_matrix(view: &mut MatrixView, event: &Event) {
         },
         _ => {}
     }
+}
+
+/// Remember what the catalog says now, so a later sync can tell a copy that
+/// merely lags from one that was customized. Best effort: a saved selection
+/// never fails because of it.
+fn record_history(catalog: &crate::core::types::Catalog) {
+    crate::core::state::record_best_effort(catalog);
 }
 
 fn write_error_message(err: WriteError) -> String {
@@ -213,6 +222,28 @@ fn accent() -> Style {
 
 fn dim() -> Style {
     Style::new().fg(Color::Rgb(148, 163, 184))
+}
+
+/// `text` cut to `width` characters, with an ellipsis when something was lost.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// The one cell the keyboard acts on: bright, impossible to miss.
+fn active_cell_style() -> Style {
+    Style::new()
+        .bg(Color::Rgb(125, 211, 252))
+        .fg(Color::Rgb(15, 23, 42))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// A faint band down the cursor column, to follow it across rows.
+fn column_style() -> Style {
+    Style::new().bg(Color::Rgb(22, 38, 62))
 }
 
 fn cursor_style() -> Style {
@@ -280,6 +311,33 @@ fn render_project(frame: &mut Frame, view: &ProjectView, has_matrix: bool) {
     frame.render_widget(Paragraph::new(lines), frame.area());
 }
 
+/// `1 name  2 name ...`, wrapped to the width, the cursor column highlighted.
+fn legend_lines(view: &MatrixView, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for (index, name) in view.matrix.server_names.iter().enumerate() {
+        let item = format!("{} {}", index + 1, name);
+        let cost = item.chars().count() + 2;
+        if used > 0 && used + cost > width {
+            lines.push(Line::from(std::mem::take(&mut current)));
+            used = 0;
+        }
+        let style = if index == view.server_cursor {
+            cursor_style()
+        } else {
+            dim()
+        };
+        current.push(Span::styled(item, style));
+        current.push(Span::raw("  "));
+        used += cost;
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(current));
+    }
+    lines
+}
+
 fn render_matrix(frame: &mut Frame, view: &MatrixView) {
     let dirty = if view.is_dirty() { " *unsaved*" } else { "" };
     let mut lines = vec![
@@ -299,26 +357,61 @@ fn render_matrix(frame: &mut Frame, view: &MatrixView) {
         return;
     }
 
-    // Header row: server initials, one per column, aligned to the grid.
-    let mut header = format!(
-        "{:<width$}",
-        format!("projects{dirty}"),
-        width = NAME_COL_WIDTH as usize
-    );
-    for name in &view.matrix.server_names {
-        let short: String = name.chars().take(CELL_STEP as usize - 1).collect();
-        header.push_str(&format!("{:<width$}", short, width = CELL_STEP as usize));
+    // Header row: one number per column, explained by the legend below the
+    // grid. Truncated names were ambiguous (three "Rovo", two "play"). The
+    // cursor column's number is lit, so the active column is visible from the
+    // header down to the grid.
+    let mut header = vec![Span::styled(
+        format!(
+            "{:<width$}",
+            format!("projects{dirty}"),
+            width = NAME_COL_WIDTH as usize
+        ),
+        dim(),
+    )];
+    for number in 1..=view.matrix.server_count() {
+        let style = if number - 1 == view.server_cursor {
+            active_cell_style()
+        } else {
+            dim()
+        };
+        // Centered over the three characters of its `[ ]`.
+        header.push(Span::styled(format!("{number:^3}"), style));
+        header.push(Span::raw(" ".repeat(CELL_STEP as usize - 3)));
     }
-    lines.push(Line::styled(header, dim()));
+    lines.push(Line::from(header));
     lines.push(Line::raw(""));
 
-    for (p, project) in view.matrix.projects.iter().enumerate() {
-        let name: String = project
-            .name
-            .chars()
-            .take(NAME_COL_WIDTH as usize - 1)
-            .collect();
-        let mut line = format!("{:<width$}", name, width = NAME_COL_WIDTH as usize);
+    for &p in view.visible_rows() {
+        let project = &view.matrix.projects[p];
+        let is_worktree = project.parent.is_some();
+        let has_children = !view.matrix.worktrees_of(p).is_empty();
+        let prefix = if is_worktree {
+            "    "
+        } else if has_children && view.is_expanded(p) {
+            "- "
+        } else if has_children {
+            "+ "
+        } else {
+            "  "
+        };
+        let name = fit(
+            &format!("{prefix}{}", project.name),
+            NAME_COL_WIDTH as usize - 2,
+        );
+        let on_cursor_row = p == view.project_cursor;
+        let row_style = if on_cursor_row {
+            cursor_style()
+        } else if is_worktree && !project.has_config {
+            dim()
+        } else {
+            Style::new()
+        };
+
+        let mut spans = vec![Span::styled(
+            format!("{:<width$}", name, width = NAME_COL_WIDTH as usize),
+            row_style,
+        )];
         for s in 0..view.matrix.server_count() {
             let checked = view.matrix.checked[p][s];
             let diverged = view.matrix.diverged[p][s];
@@ -329,24 +422,187 @@ fn render_matrix(frame: &mut Frame, view: &MatrixView) {
             } else {
                 "[ ]"
             };
-            line.push_str(&format!("{:<width$}", mark, width = CELL_STEP as usize));
+            let on_cursor_column = s == view.server_cursor;
+            let cell_style = if on_cursor_row && on_cursor_column {
+                active_cell_style()
+            } else if on_cursor_column {
+                row_style.patch(column_style())
+            } else {
+                row_style
+            };
+            spans.push(Span::styled(mark, cell_style));
+            let gap = if on_cursor_column && !on_cursor_row {
+                column_style()
+            } else {
+                row_style
+            };
+            spans.push(Span::styled(
+                " ".repeat(CELL_STEP as usize - mark.len()),
+                gap,
+            ));
         }
-        let is_cursor_row = p == view.project_cursor;
-        let style = if is_cursor_row {
-            cursor_style()
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(line, style));
+        if is_worktree && !project.has_config {
+            spans.push(Span::styled("  no config (i)", row_style));
+        }
+        lines.push(Line::from(spans));
     }
 
-    let selected = &view.matrix.server_names[view.server_cursor];
     lines.push(Line::raw(""));
-    lines.push(Line::styled(format!("column: {selected}"), dim()));
+    lines.extend(legend_lines(view, frame.area().width as usize));
+    if let Some(hint) = view.row_hint() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(hint, accent()));
+    }
 
+    for outside in &view.outside {
+        lines.push(Line::styled(outside.clone(), dim()));
+    }
     if let Some(message) = &view.message {
         lines.push(Line::styled(message.clone(), dim()));
     }
 
     frame.render_widget(Paragraph::new(lines), frame.area());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::discovery::DiscoveredProject;
+    use crate::core::matrix::Matrix;
+    use crate::core::merge::compute_statuses;
+    use crate::core::types::Catalog;
+    use ratatui::{backend::TestBackend, Terminal};
+    use serde_json::Map;
+    use std::path::PathBuf;
+
+    fn draw(view: &MatrixView) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+        terminal.draw(|frame| render_matrix(frame, view)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn screen(view: &MatrixView) -> String {
+        let buffer = draw(view);
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn similar_server_names_are_told_apart_and_keys_are_explained_in_place() {
+        let mut servers = Map::new();
+        for name in ["Rovo-MCP-Jira3", "Rovo-MCP-Septime", "Rovo-MCP-Versailles"] {
+            servers.insert(name.to_string(), serde_json::json!({ "command": "x" }));
+        }
+        let catalog = Catalog { servers };
+        let project = |dir: &str, parent: Option<&str>, has_config: bool| DiscoveredProject {
+            name: dir.rsplit('/').next().unwrap().to_string(),
+            dir: PathBuf::from(dir),
+            statuses: compute_statuses(&catalog, &Map::new()),
+            active_count: 0,
+            parent: parent.map(PathBuf::from),
+            has_config,
+        };
+        let projects = vec![
+            project("/sites/germineo", None, true),
+            project(
+                "/sites/germineo/.worktrees/feat",
+                Some("/sites/germineo"),
+                false,
+            ),
+        ];
+        let matrix = Matrix::build(&catalog, &projects);
+        let mut view = MatrixView::new(catalog, matrix);
+        view.server_cursor = 2;
+
+        let shown = screen(&view);
+        assert!(shown.contains("1    2    3"), "numbered header:\n{shown}");
+        assert!(shown.contains("1 Rovo-MCP-Jira3"), "legend:\n{shown}");
+        assert!(shown.contains("3 Rovo-MCP-Versailles"), "legend:\n{shown}");
+        assert!(shown.contains("- germineo"), "{shown}");
+        assert!(shown.contains("no config"), "{shown}");
+
+        view.project_cursor = 1;
+        let shown = screen(&view);
+        assert!(
+            shown.contains("no config — i: write it from germineo"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_active_cell_column_and_header_follow_the_keyboard() {
+        let mut servers = Map::new();
+        for name in ["a", "b", "c"] {
+            servers.insert(name.to_string(), serde_json::json!({ "command": "x" }));
+        }
+        let catalog = Catalog { servers };
+        let project = |dir: &str| DiscoveredProject {
+            name: dir.trim_start_matches('/').to_string(),
+            dir: PathBuf::from(dir),
+            statuses: compute_statuses(&catalog, &Map::new()),
+            active_count: 0,
+            parent: None,
+            has_config: true,
+        };
+        let matrix = Matrix::build(&catalog, &[project("/p1"), project("/p2")]);
+        let mut view = MatrixView::new(catalog, matrix);
+        let active = active_cell_style().bg;
+        let band = column_style().bg;
+
+        let at = |buffer: &ratatui::buffer::Buffer, column: u16, line: u16| {
+            // First character of the cell: the "[" of "[ ]" or the header digit.
+            buffer[(NAME_COL_WIDTH + column * CELL_STEP, line)]
+                .style()
+                .bg
+        };
+        let (header, row1, row2) = (2, 4, 5);
+
+        view.project_cursor = 1;
+        view.server_cursor = 2;
+        let buffer = draw(&view);
+        assert_eq!(at(&buffer, 2, row2), active, "the cell under the cursor");
+        assert_eq!(at(&buffer, 2, header), active, "its column number");
+        assert_eq!(at(&buffer, 2, row1), band, "the column band on other rows");
+        assert_ne!(at(&buffer, 0, row2), active, "no other cell is active");
+        assert_ne!(at(&buffer, 1, header), active);
+
+        view.move_server(-1);
+        view.move_project(-1);
+        let buffer = draw(&view);
+        assert_eq!(at(&buffer, 1, row1), active, "it moves with the keys");
+        assert_eq!(at(&buffer, 1, header), active);
+        assert_ne!(at(&buffer, 2, row2), active);
+    }
+
+    #[test]
+    fn header_numbers_sit_over_the_middle_of_their_cell_and_long_names_end_in_an_ellipsis() {
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(fit("germineo-fix-security-audit", 12), "germineo-fi…");
+
+        let mut servers = Map::new();
+        servers.insert("a".to_string(), serde_json::json!({ "command": "x" }));
+        let catalog = Catalog { servers };
+        let project = DiscoveredProject {
+            name: "p".to_string(),
+            dir: PathBuf::from("/p"),
+            statuses: compute_statuses(&catalog, &Map::new()),
+            active_count: 0,
+            parent: None,
+            has_config: true,
+        };
+        let matrix = Matrix::build(&catalog, &[project]);
+        let view = MatrixView::new(catalog, matrix);
+        let buffer = draw(&view);
+        let x = NAME_COL_WIDTH;
+        // Header line 2, first project line 4: the digit above the space of `[ ]`.
+        assert_eq!(buffer[(x + 1, 2)].symbol(), "1");
+        assert_eq!(buffer[(x, 4)].symbol(), "[");
+        assert_eq!(buffer[(x + 1, 4)].symbol(), " ");
+    }
 }

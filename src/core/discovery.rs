@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use super::merge::{compute_statuses, ServerState, ServerStatus};
 use super::types::Catalog;
-use super::workspace::read_workspace;
+use super::workspace::{read_workspace, workspace_mcp_path};
+use super::worktrees::families;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredProject {
@@ -17,6 +18,23 @@ pub struct DiscoveredProject {
     pub statuses: Vec<ServerStatus>,
     /// How many catalog servers are present (any non-absent state).
     pub active_count: usize,
+    /// The main worktree this directory is linked to; `None` for a project.
+    pub parent: Option<PathBuf>,
+    /// Whether `.kiro/settings/mcp.json` exists. A worktree often has none.
+    pub has_config: bool,
+}
+
+impl DiscoveredProject {
+    pub fn is_worktree(&self) -> bool {
+        self.parent.is_some()
+    }
+
+    /// Whether any catalog server in this directory differs from the catalog.
+    pub fn has_divergence(&self) -> bool {
+        self.statuses
+            .iter()
+            .any(|s| s.state == ServerState::Diverged)
+    }
 }
 
 fn has_kiro(dir: &Path) -> bool {
@@ -58,7 +76,32 @@ fn walk(dir: &Path, depth: u32, max_depth: u32, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// Discover projects under every root, deduplicated and sorted by path.
+/// Read one directory into a [`DiscoveredProject`].
+fn project_at(catalog: &Catalog, dir: PathBuf, parent: Option<PathBuf>) -> DiscoveredProject {
+    let ws = read_workspace(&dir).unwrap_or_default();
+    let statuses = compute_statuses(catalog, &ws.servers);
+    let active_count = statuses
+        .iter()
+        .filter(|s| s.state != ServerState::Absent)
+        .count();
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.to_string_lossy().into_owned());
+    DiscoveredProject {
+        name,
+        has_config: workspace_mcp_path(&dir).is_file(),
+        dir,
+        statuses,
+        active_count,
+        parent,
+    }
+}
+
+/// Discover projects under every root, deduplicated. Worktrees are attached to
+/// their main checkout — wherever they live — and listed right after it, so a
+/// directory found on its own that turns out to be a worktree no longer shows
+/// up as a project of its own.
 pub fn discover_projects(
     catalog: &Catalog,
     roots: &[PathBuf],
@@ -70,27 +113,16 @@ pub fn discover_projects(
             dirs.insert(dir);
         }
     }
+    let candidates: Vec<PathBuf> = dirs.into_iter().collect();
 
-    dirs.into_iter()
-        .map(|dir| {
-            let ws = read_workspace(&dir).unwrap_or_default();
-            let statuses = compute_statuses(catalog, &ws.servers);
-            let active_count = statuses
-                .iter()
-                .filter(|s| s.state != ServerState::Absent)
-                .count();
-            let name = dir
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| dir.to_string_lossy().into_owned());
-            DiscoveredProject {
-                name,
-                dir,
-                statuses,
-                active_count,
-            }
-        })
-        .collect()
+    let mut projects = Vec::new();
+    for family in families(&candidates) {
+        projects.push(project_at(catalog, family.parent.clone(), None));
+        for worktree in family.worktrees {
+            projects.push(project_at(catalog, worktree, Some(family.parent.clone())));
+        }
+    }
+    projects
 }
 
 #[cfg(test)]
@@ -180,5 +212,33 @@ mod tests {
         let projects = discover_projects(&catalog, &[dir.path().to_path_buf()], 2);
         let found = projects.iter().find(|p| p.dir == proj).unwrap();
         assert_eq!(found.active_count, 1);
+        assert!(found.has_config);
+        assert!(!found.is_worktree());
+    }
+
+    #[test]
+    fn worktrees_follow_their_parent_even_when_found_on_their_own() {
+        use crate::core::worktrees::testing::{linked, main_repo};
+
+        let dir = tempfile::tempdir().unwrap();
+        let main = make_project(dir.path(), "proj");
+        main_repo(&main);
+        // Found by the scan as a project of its own, outside `.worktrees/`.
+        let sibling = dir.path().join("proj__build");
+        linked(&main, &sibling, "build");
+        std::fs::create_dir_all(sibling.join(".kiro")).unwrap();
+        // Only reachable through git's records: no `.kiro` at all.
+        let bare_wt = main.join(".worktrees").join("feat");
+        linked(&main, &bare_wt, "feat");
+
+        let projects = discover_projects(&empty_catalog(), &[dir.path().to_path_buf()], 2);
+        assert_eq!(projects.len(), 3, "one project and its two worktrees");
+        assert_eq!(projects[0].dir, main);
+        assert!(!projects[0].is_worktree());
+        for worktree in &projects[1..] {
+            assert!(worktree.is_worktree());
+            assert_eq!(worktree.parent.as_deref(), Some(main.as_path()));
+            assert!(!worktree.has_config, "no mcp.json yet: shown as no config");
+        }
     }
 }

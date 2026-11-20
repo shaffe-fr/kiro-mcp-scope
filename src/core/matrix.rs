@@ -10,15 +10,24 @@
 
 use std::path::PathBuf;
 
+use serde_json::Value;
+
 use super::discovery::DiscoveredProject;
-use super::merge::{apply_toggles, OnDiverge, ServerState, Toggle};
+use super::merge::{apply_toggles, compute_status, OnDiverge, ServerState, Toggle};
 use super::types::Catalog;
-use super::workspace::{read_workspace, write_workspace, WorkspaceFile, WriteError};
+use super::workspace::{
+    read_workspace, workspace_mcp_path, write_workspace, WorkspaceFile, WriteError,
+};
+use super::worktrees::same_path;
 
 #[derive(Debug, Clone)]
 pub struct ProjectRef {
     pub name: String,
     pub dir: PathBuf,
+    /// Row index of the project this worktree is linked to.
+    pub parent: Option<usize>,
+    /// Whether `.kiro/settings/mcp.json` exists. A worktree often has none.
+    pub has_config: bool,
 }
 
 /// The editable matrix. `initial` is the state as discovered; `checked` is the
@@ -59,6 +68,13 @@ impl Matrix {
             diverged.push(row_diverged);
         }
 
+        let parent_row = |project: &DiscoveredProject| {
+            let parent = project.parent.as_ref()?;
+            projects
+                .iter()
+                .position(|candidate| same_path(&candidate.dir, parent))
+        };
+
         Self {
             server_names,
             projects: projects
@@ -66,6 +82,8 @@ impl Matrix {
                 .map(|p| ProjectRef {
                     name: p.name.clone(),
                     dir: p.dir.clone(),
+                    parent: parent_row(p),
+                    has_config: p.has_config,
                 })
                 .collect(),
             initial: checked.clone(),
@@ -80,6 +98,53 @@ impl Matrix {
 
     pub fn server_count(&self) -> usize {
         self.server_names.len()
+    }
+
+    /// Rows of the worktrees linked to `project`.
+    pub fn worktrees_of(&self, project: usize) -> Vec<usize> {
+        self.projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.parent == Some(project))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Whether a row has something to look at: a server diverging from the
+    /// catalog, or (for a worktree) no config at all.
+    pub fn needs_attention(&self, project: usize) -> bool {
+        let Some(info) = self.projects.get(project) else {
+            return false;
+        };
+        let missing = info.parent.is_some() && !info.has_config;
+        missing
+            || self
+                .diverged
+                .get(project)
+                .is_some_and(|row| row.contains(&true))
+    }
+
+    /// Re-read one row from disk, dropping any pending edit of it.
+    pub fn reload_row(&mut self, catalog: &Catalog, project: usize) {
+        let Some(info) = self.projects.get_mut(project) else {
+            return;
+        };
+        let workspace = read_workspace(&info.dir).unwrap_or_default();
+        info.has_config = workspace_mcp_path(&info.dir).is_file();
+        for (s, name) in self.server_names.iter().enumerate() {
+            let entry = catalog.servers.get(name).and_then(Value::as_object);
+            let local = workspace.servers.get(name).and_then(Value::as_object);
+            let status = entry.map(|entry| compute_status(name, entry, local));
+            let present = status
+                .as_ref()
+                .is_some_and(|st| st.state != ServerState::Absent);
+            let diverged = status
+                .as_ref()
+                .is_some_and(|st| st.state == ServerState::Diverged);
+            self.checked[project][s] = present;
+            self.initial[project][s] = present;
+            self.diverged[project][s] = diverged;
+        }
     }
 
     pub fn toggle(&mut self, project: usize, server: usize) {
@@ -165,6 +230,8 @@ mod tests {
             dir: PathBuf::from(dir),
             statuses,
             active_count: 0,
+            parent: None,
+            has_config: true,
         }
     }
 

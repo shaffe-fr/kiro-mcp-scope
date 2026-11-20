@@ -79,6 +79,10 @@ impl ProjectView {
         self.rows.len()
     }
 
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
